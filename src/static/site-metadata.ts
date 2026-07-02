@@ -35,7 +35,7 @@ const data: ISiteMetadataResult = {
     {
       name: '2019~2023',
       url: 'https://running.gujiakai.top',
-    }
+    },
   ],
 };
 
