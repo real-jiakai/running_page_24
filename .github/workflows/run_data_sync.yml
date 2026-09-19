@@ -150,8 +150,7 @@ jobs:
       - name: Run sync Strava script
         if: env.RUN_TYPE == 'strava'
         env:
-          # One-time recovery of GPS data damaged by the old exporter.
-          FORCE_STRAVA_SYNC: 'true'
+          FORCE_STRAVA_SYNC: ${{ inputs.force_strava_sync || false }}
           STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
           STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
           STRAVA_CLIENT_REFRESH_TOKEN: ${{ secrets.STRAVA_CLIENT_REFRESH_TOKEN }}
