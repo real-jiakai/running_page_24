@@ -2,6 +2,12 @@ name: Run Data Sync
 
 on:
   workflow_dispatch:
+    inputs:
+      force_strava_sync:
+        description: Refresh all Strava activities from the source
+        type: boolean
+        default: false
+        required: false
   schedule:
     - cron: '0 0 * * *'
   push:
@@ -143,8 +149,17 @@ jobs:
 
       - name: Run sync Strava script
         if: env.RUN_TYPE == 'strava'
+        env:
+          FORCE_STRAVA_SYNC: ${{ inputs.force_strava_sync || false }}
+          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_CLIENT_REFRESH_TOKEN: ${{ secrets.STRAVA_CLIENT_REFRESH_TOKEN }}
         run: |
-          python run_page/strava_sync.py ${{ secrets.STRAVA_CLIENT_ID }} ${{ secrets.STRAVA_CLIENT_SECRET }} ${{ secrets.STRAVA_CLIENT_REFRESH_TOKEN }}
+          args=()
+          if [ "$FORCE_STRAVA_SYNC" = "true" ]; then
+            args+=(--force)
+          fi
+          python run_page/strava_sync.py "$STRAVA_CLIENT_ID" "$STRAVA_CLIENT_SECRET" "$STRAVA_CLIENT_REFRESH_TOKEN" "${args[@]}"
         # If you only want to sync 'type running' add args --only-run, default script is to sync all data (rides and runs).
 
       # for garmin if you want generate 'tcx' you can add --tcx command in the args.
