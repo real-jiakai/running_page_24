@@ -141,36 +141,44 @@ export const geoJsonForMap = async (): Promise<
 export const getBoundsForGeoData = (
   geoData: FeatureCollection<LineString>
 ): IViewState => {
-  const { features } = geoData;
-  let points: Coordinate[] = [];
-  // find first have data
-  for (const f of features) {
-    if (f.geometry.coordinates.length) {
-      points = f.geometry.coordinates as Coordinate[];
-      break;
+  let minLongitude = Infinity;
+  let minLatitude = Infinity;
+  let maxLongitude = -Infinity;
+  let maxLatitude = -Infinity;
+
+  // Include every recorded route so an older GPS fix cannot hide other cities.
+  for (const feature of geoData.features) {
+    for (const [longitude, latitude] of feature.geometry.coordinates) {
+      if (
+        !Number.isFinite(longitude) ||
+        !Number.isFinite(latitude) ||
+        Math.abs(longitude) > 180 ||
+        Math.abs(latitude) > 90
+      ) {
+        continue;
+      }
+      minLongitude = Math.min(minLongitude, longitude);
+      minLatitude = Math.min(minLatitude, latitude);
+      maxLongitude = Math.max(maxLongitude, longitude);
+      maxLatitude = Math.max(maxLatitude, latitude);
     }
   }
-  if (points.length === 0) {
+
+  if (!Number.isFinite(minLongitude)) {
     return { longitude: 20, latitude: 20, zoom: 3 };
   }
-  if (points.length === 2 && String(points[0]) === String(points[1])) {
-    return { longitude: points[0][0], latitude: points[0][1], zoom: 9 };
+  if (minLongitude === maxLongitude && minLatitude === maxLatitude) {
+    return { longitude: minLongitude, latitude: minLatitude, zoom: 9 };
   }
-  // Calculate corner values of bounds
-  const pointsLong = points.map((point) => point[0]) as number[];
-  const pointsLat = points.map((point) => point[1]) as number[];
   const cornersLongLat: [Coordinate, Coordinate] = [
-    [Math.min(...pointsLong), Math.min(...pointsLat)],
-    [Math.max(...pointsLong), Math.max(...pointsLat)],
+    [minLongitude, minLatitude],
+    [maxLongitude, maxLatitude],
   ];
   const viewState = new WebMercatorViewport({
     width: 800,
     height: 600,
   }).fitBounds(cornersLongLat, { padding: 200 });
-  let { longitude, latitude, zoom } = viewState;
-  if (features.length > 1) {
-    zoom = 11.5;
-  }
+  const { longitude, latitude, zoom } = viewState;
   return { longitude, latitude, zoom };
 };
 

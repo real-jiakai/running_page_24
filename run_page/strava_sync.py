@@ -14,7 +14,7 @@ def run_strava_sync(
     only_run=False,
     force=False,
 ):
-    """Export source activities; force refreshes GPS for the entire history."""
+    """Export real GPS, recovering missing summaries from details and streams."""
     generator = Generator(SQL_FILE)
     generator.set_strava_config(client_id, client_secret, refresh_token)
     # judge sync types is only running or not

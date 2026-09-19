@@ -4,6 +4,7 @@ import {
   RUN_TITLES,
   ACTIVITY_TYPES,
   RICH_TITLE,
+  IS_CHINESE,
 } from './const';
 
 export type Coordinate = [number, number];
@@ -34,7 +35,14 @@ export interface Activity {
   streak: number;
 }
 
-const titleForShow = (run: Activity): string => {
+const titleForShow = (
+  run: Activity,
+  mapMessage = !run.summary_polyline
+    ? IS_CHINESE
+      ? '暂无 GPS 轨迹'
+      : 'GPS route unavailable'
+    : ''
+): string => {
   const date = run.start_date_local.slice(0, 11);
   const distance = (run.distance / M_TO_DIST).toFixed(2);
   let name = 'Run';
@@ -44,9 +52,7 @@ const titleForShow = (run: Activity): string => {
   if (run.name) {
     name = run.name;
   }
-  return `${name} ${date} ${distance} ${DIST_UNIT} ${
-    !run.summary_polyline ? '(No map data for this run)' : ''
-  }`;
+  return `${name} ${date} ${distance} ${DIST_UNIT}${mapMessage ? ` · ${mapMessage}` : ''}`;
 };
 
 const formatPace = (d: number): string => {

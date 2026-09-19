@@ -16,6 +16,8 @@ from generator.db import Activity
 from gpxtrackposter.track import Track
 from polyline_processor import filter_out, start_end_hiding
 from strava_sync import run_strava_sync
+from stravalib.exc import RateLimitExceeded
+from stravalib.model import Activity as StravaActivity
 
 LIUZHOU_POINTS = [
     (24.40819, 109.53127),
@@ -35,6 +37,31 @@ NANNING_POINTS = [
 ]
 LIUZHOU_LOCATION = "柳州职业技术大学, 柳州市, 广西壮族自治区, 中国"
 NANNING_LOCATION = "清川, 南宁市, 广西壮族自治区, 中国"
+
+
+def strava_activity(run_id, summary="", detailed_route=None):
+    return StravaActivity.deserialize(
+        {
+            "id": run_id,
+            "resource_state": 3 if detailed_route else 2,
+            "name": "Morning Run",
+            "type": "Run",
+            "distance": 1100.0,
+            "moving_time": 720,
+            "elapsed_time": 720,
+            "start_date": "2026-09-12T10:48:15Z",
+            "start_date_local": "2026-09-12T18:48:15Z",
+            "start_latlng": list(NANNING_POINTS[0]),
+            "average_speed": 1.5,
+            "total_elevation_gain": 0,
+            "map": {
+                "id": f"a{run_id}",
+                "resource_state": 3 if detailed_route else 2,
+                "summary_polyline": summary,
+                "polyline": detailed_route,
+            },
+        }
+    )
 
 
 class GeneratorRouteTests(unittest.TestCase):
@@ -230,6 +257,140 @@ class GeneratorRouteTests(unittest.TestCase):
                         },
                     )
 
+    def test_sync_recovers_detailed_gps_and_preserves_activity_metrics(self):
+        earlier = self.add_activity(
+            19997632434, "2026-09-02 06:43:15", LIUZHOU_POINTS, LIUZHOU_LOCATION
+        )
+        repaired = self.add_activity(
+            20142182471,
+            "2026-09-12 18:48:15",
+            LIUZHOU_POINTS,
+            NANNING_LOCATION,
+            "indoor",
+        )
+        metadata_keys = (
+            "run_id",
+            "distance",
+            "moving_time",
+            "elapsed_time",
+            "start_date",
+            "start_date_local",
+            "location_country",
+        )
+        original_metadata = [
+            tuple(getattr(row, key) for key in metadata_keys)
+            for row in (earlier, repaired)
+        ]
+        recorded_route = polyline.encode(NANNING_POINTS)
+        summary = strava_activity(repaired.run_id)
+        summary.map = None
+        detail = strava_activity(repaired.run_id, detailed_route=recorded_route)
+        with (
+            patch.object(self.generator, "check_access"),
+            patch.object(
+                self.generator.client, "get_activities", return_value=[summary]
+            ),
+            patch.object(
+                self.generator.client, "get_activity", return_value=detail
+            ) as get_detail,
+            patch.object(self.generator.client, "get_activity_streams") as get_streams,
+            patch.multiple(
+                "polyline_processor",
+                IGNORE_START_END_RANGE=0.01,
+                IGNORE_RANGE=0,
+                IGNORE_POLYLINE=[],
+            ),
+        ):
+            self.generator.sync(force=True)
+            self.session.expire_all()
+            exported = self.generator.load()
+
+        get_detail.assert_called_once_with(repaired.run_id)
+        get_streams.assert_not_called()
+        self.assertEqual(self.session.query(Activity).count(), 2)
+        self.assertEqual(
+            [
+                tuple(getattr(row, key) for key in metadata_keys)
+                for row in (earlier, repaired)
+            ],
+            original_metadata,
+        )
+        self.assertEqual(earlier.summary_polyline, polyline.encode(LIUZHOU_POINTS))
+        self.assertEqual(repaired.summary_polyline, recorded_route)
+        self.assertEqual(repaired.subtype, "Run")
+        public_route = polyline.decode(exported[1]["summary_polyline"])
+        self.assertGreaterEqual(len(public_route), 2)
+        self.assertTrue(
+            all(22.6 < lat < 23 and 108 < lon < 108.6 for lat, lon in public_route)
+        )
+        self.assertNotEqual(exported[1]["summary_polyline"], recorded_route)
+        self.assertEqual(exported[1]["location_country"], NANNING_LOCATION)
+
+    def test_repeated_incremental_sync_recovers_empty_summary_without_erasing_gps(self):
+        activity = self.add_activity(
+            20142182471, "2026-09-12 18:48:15", location=NANNING_LOCATION
+        )
+        recorded_route = polyline.encode(NANNING_POINTS)
+        summaries = [strava_activity(activity.run_id), strava_activity(activity.run_id)]
+        with (
+            patch.object(self.generator, "check_access"),
+            patch.object(
+                self.generator.client,
+                "get_activities",
+                side_effect=[[summary] for summary in summaries],
+            ) as get_summaries,
+            patch.object(
+                self.generator.client,
+                "get_activity",
+                return_value=strava_activity(
+                    activity.run_id, detailed_route=recorded_route
+                ),
+            ) as get_detail,
+            patch.object(self.generator.client, "get_activity_streams") as get_streams,
+        ):
+            for _ in summaries:
+                self.generator.sync(force=False)
+                self.session.expire_all()
+                self.assertEqual(activity.summary_polyline, recorded_route)
+                self.assertEqual(self.session.query(Activity).count(), 1)
+                self.assertEqual(activity.distance, 1100.0)
+                self.assertEqual(activity.moving_time, datetime.timedelta(minutes=12))
+                self.assertEqual(activity.elapsed_time, datetime.timedelta(minutes=12))
+
+        self.assertEqual(get_detail.call_count, 2)
+        self.assertTrue(
+            all("after" in call.kwargs for call in get_summaries.call_args_list)
+        )
+        get_streams.assert_not_called()
+
+    def test_failed_detail_request_cannot_commit_an_empty_summary_over_existing_gps(
+        self,
+    ):
+        activity = self.add_activity(
+            20142182471, "2026-09-12 18:48:15", NANNING_POINTS, NANNING_LOCATION
+        )
+        original = activity.to_dict()
+        error = RateLimitExceeded("Read quota exhausted")
+        with (
+            patch.object(self.generator, "check_access"),
+            patch.object(
+                self.generator.client,
+                "get_activities",
+                return_value=[strava_activity(activity.run_id)],
+            ),
+            patch.object(self.generator.client, "get_activity", side_effect=error),
+            patch.object(self.session, "commit", wraps=self.session.commit) as commit,
+        ):
+            with self.assertRaises(RateLimitExceeded) as raised:
+                self.generator.sync(force=False)
+
+        self.assertIs(raised.exception, error)
+        commit.assert_not_called()
+        self.assertFalse(self.session.dirty)
+        self.session.expire_all()
+        self.assertEqual(activity.to_dict(), original)
+        self.assertEqual(self.session.query(Activity).count(), 1)
+
 
 class StravaSyncTests(unittest.TestCase):
     def test_force_argument_reaches_sync_and_export_is_written(self):
@@ -280,8 +441,13 @@ class PrivacyRouteTests(unittest.TestCase):
     def test_enabled_start_end_hiding_handles_short_tracks(self):
         self.assertEqual(start_end_hiding([], 0.01), [])
         self.assertEqual(start_end_hiding(NANNING_POINTS[:1], 0.01), [])
-        self.assertEqual(start_end_hiding(NANNING_POINTS[:2], 0.01), [])
-        self.assertEqual(start_end_hiding(NANNING_POINTS, 0.01), NANNING_POINTS[1:-1])
+        sparse = start_end_hiding(NANNING_POINTS[:2], 0.01)
+        self.assertEqual(len(sparse), 2)
+        self.assertNotEqual(sparse, NANNING_POINTS[:2])
+        full = start_end_hiding(NANNING_POINTS, 0.01)
+        self.assertEqual(full[1:-1], NANNING_POINTS[1:-1])
+        self.assertNotEqual(full[0], NANNING_POINTS[0])
+        self.assertNotEqual(full[-1], NANNING_POINTS[-1])
 
 
 if __name__ == "__main__":

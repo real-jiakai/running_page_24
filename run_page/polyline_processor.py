@@ -69,30 +69,63 @@ def range_hiding(
     ]
 
 
-def start_end_hiding(polyline: List[Tuple[float]], distance: int) -> List[Tuple[float]]:
+def _interpolate_point(start, end, fraction):
+    if fraction <= 0:
+        return start
+    if fraction >= 1:
+        return end
+
+    # Follow the recorded segment even when it crosses the antimeridian.
+    longitude_delta = (end[1] - start[1] + 180) % 360 - 180
+    longitude = (start[1] + longitude_delta * fraction + 180) % 360 - 180
+    return (start[0] + (end[0] - start[0]) * fraction, longitude)
+
+
+def start_end_hiding(
+    polyline: List[Tuple[float]], distance: float
+) -> List[Tuple[float]]:
+    """Trim a distance in kilometers from both ends along the recorded route."""
     if distance <= 0:
         return polyline[:]
 
-    start_index, end_index = 0, len(polyline) - 1
+    cumulative_distances = [0.0]
+    for start, end in zip(polyline, polyline[1:]):
+        cumulative_distances.append(cumulative_distances[-1] + haversine(start, end))
 
-    starting_distance = 0
-    for i in range(1, len(polyline)):
-        starting_distance += haversine(polyline[i], polyline[i - 1])
-        if starting_distance > distance:
-            start_index = i
-            break
-
-    ending_distance = 0
-    for i in range(len(polyline) - 2, -1, -1):
-        ending_distance += haversine(polyline[i], polyline[i + 1])
-        if ending_distance > distance:
-            end_index = i
-            break
-
-    if start_index >= end_index:
+    route_length = cumulative_distances[-1]
+    if route_length <= distance * 2:
         return []
 
-    return polyline[start_index : end_index + 1]
+    end_distance = route_length - distance
+    trimmed = []
+    for i in range(1, len(polyline)):
+        segment_start = cumulative_distances[i - 1]
+        segment_end = cumulative_distances[i]
+        segment_length = segment_end - segment_start
+
+        # Interpolate at the boundary instead of discarding a whole GPS segment.
+        # Strict lower bounds also avoid division by zero for duplicate points.
+        if segment_start < distance <= segment_end:
+            trimmed.append(
+                _interpolate_point(
+                    polyline[i - 1],
+                    polyline[i],
+                    (distance - segment_start) / segment_length,
+                )
+            )
+        if distance < segment_end < end_distance:
+            trimmed.append(polyline[i])
+        if segment_start < end_distance <= segment_end:
+            trimmed.append(
+                _interpolate_point(
+                    polyline[i - 1],
+                    polyline[i],
+                    (end_distance - segment_start) / segment_length,
+                )
+            )
+            break
+
+    return trimmed
 
 
 def filter_out(polyline_str):

@@ -263,24 +263,41 @@ const Index = () => {
 
       // Create geoData for selected runs and calculate new bounds
       const selectedGeoData = geoJsonForRuns(selectedRuns);
-      const selectedBounds = getBoundsForGeoData(selectedGeoData);
+      const hasSelectedRoute = selectedGeoData.features.some(
+        (feature) => feature.geometry.coordinates.length >= 2
+      );
+      const contextGeoData = hasSelectedRoute
+        ? selectedGeoData
+        : geoJsonForRuns(runs.filter((run) => !ids.has(run.run_id)));
+      const hasContextRoute = contextGeoData.features.some(
+        (feature) => feature.geometry.coordinates.length >= 2
+      );
 
       // Stop any existing animation
       setIsAnimating(false);
 
       // Update the animated geoData immediately to trigger RunMap animation
-      setAnimatedGeoData(selectedGeoData);
+      setAnimatedGeoData(contextGeoData);
 
       // For single run, trigger animation by incrementing the trigger
-      if (runIds.length === 1) {
+      if (runIds.length === 1 && hasSelectedRoute) {
         setAnimationTrigger((prev) => prev + 1);
       }
 
-      // Update view state
-      setViewState({
-        ...selectedBounds,
-      });
-      setTitle(titleForShow(lastRun));
+      // Without GPS, keep useful route context and never imply it is this run's path.
+      if (hasContextRoute) {
+        setViewState(getBoundsForGeoData(contextGeoData));
+      }
+      const mapMessage = hasSelectedRoute
+        ? undefined
+        : hasContextRoute
+          ? IS_CHINESE
+            ? '本次暂无 GPS；地图显示其他活动轨迹'
+            : 'GPS unavailable for this activity; map shows other recorded activities'
+          : IS_CHINESE
+            ? '当前活动暂无 GPS 轨迹'
+            : 'GPS routes unavailable for the selected activities';
+      setTitle(titleForShow(lastRun, mapMessage));
       scrollToMap();
     },
     [runs]

@@ -8,6 +8,8 @@ from gpxtrackposter import track_loader
 from sqlalchemy import func
 
 from polyline_processor import filter_out
+from strava_rate_limit import wait_for_strava_quota
+from strava_routes import resolve_activity_route
 from synced_data_file_logger import save_synced_data_file_list
 
 from .db import Activity, init_db, update_or_create_activity
@@ -17,7 +19,7 @@ IGNORE_BEFORE_SAVING = os.getenv("IGNORE_BEFORE_SAVING", False)
 
 class Generator:
     def __init__(self, db_path):
-        self.client = stravalib.Client()
+        self.client = stravalib.Client(rate_limiter=wait_for_strava_quota)
         self.session = init_db(db_path)
 
         self.client_id = ""
@@ -68,8 +70,12 @@ class Generator:
             if self.only_run and activity.type != "Run":
                 continue
             synced_count += 1
-            if activity.map and activity.map.summary_polyline:
+            route = resolve_activity_route(self.client, activity)
+            if route:
                 gps_count += 1
+            if activity.map is None:
+                activity.map = stravalib.model.Map()
+            activity.map.summary_polyline = route or ""
             if IGNORE_BEFORE_SAVING:
                 if activity.map and activity.map.summary_polyline:
                     activity.map.summary_polyline = filter_out(

@@ -28,7 +28,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Test activity route integrity
-        run: python -m unittest test_generator_routes
+        run: python -m unittest test_generator_routes test_strava_routes test_polyline_processor test_strava_rate_limit
 
       - name: Run GPX sync test
         run: |
