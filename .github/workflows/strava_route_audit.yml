@@ -1,0 +1,64 @@
+name: Inspect Strava route data
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/strava_route_audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect activity details and GPS streams
+        env:
+          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_CLIENT_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          payload = urlencode({
+              "client_id": os.environ["STRAVA_CLIENT_ID"],
+              "client_secret": os.environ["STRAVA_CLIENT_SECRET"],
+              "refresh_token": os.environ["STRAVA_REFRESH_TOKEN"],
+              "grant_type": "refresh_token",
+          }).encode()
+          with urlopen(Request("https://www.strava.com/oauth/token", data=payload), timeout=30) as response:
+              token = json.load(response)["access_token"]
+
+          def get(path):
+              request = Request("https://www.strava.com/api/v3" + path, headers={"Authorization": "Bearer " + token})
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      return response.status, json.load(response)
+              except HTTPError as error:
+                  return error.code, {}
+
+          for activity_id in [19997632434, 20026251551, 20142182471, 20233117633]:
+              status, activity = get(f"/activities/{activity_id}")
+              stream_status, streams = get(f"/activities/{activity_id}/streams?keys=latlng&key_by_type=true")
+              route = activity.get("map") or {}
+              print(json.dumps({
+                  "activity_id": activity_id,
+                  "detail_status": status,
+                  "date": activity.get("start_date_local"),
+                  "manual": activity.get("manual"),
+                  "trainer": activity.get("trainer"),
+                  "sport_type": activity.get("sport_type"),
+                  "device": activity.get("device_name"),
+                  "has_start_coordinates": bool(activity.get("start_latlng")),
+                  "summary_polyline_characters": len(route.get("summary_polyline") or ""),
+                  "detailed_polyline_characters": len(route.get("polyline") or ""),
+                  "stream_status": stream_status,
+                  "gps_stream_points": len((streams.get("latlng") or {}).get("data") or []),
+              }), flush=True)
+          PY
