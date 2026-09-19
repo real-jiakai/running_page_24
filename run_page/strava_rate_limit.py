@@ -20,7 +20,7 @@ def wait_for_strava_quota(headers):
     """Use response headers to pause until every exhausted quota resets.
 
     Strava resets short quotas on UTC quarter hours and daily quotas at
-    midnight UTC. This callback runs after each successful API response.
+    midnight UTC. Stravalib calls this callback after each API response.
     """
     if not headers:
         return

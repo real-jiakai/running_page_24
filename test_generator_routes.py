@@ -380,9 +380,9 @@ class GeneratorRouteTests(unittest.TestCase):
             ),
             patch.object(self.generator.client, "get_activity", side_effect=error),
             patch.object(self.session, "commit", wraps=self.session.commit) as commit,
+            self.assertRaises(RateLimitExceeded) as raised,
         ):
-            with self.assertRaises(RateLimitExceeded) as raised:
-                self.generator.sync(force=False)
+            self.generator.sync(force=False)
 
         self.assertIs(raised.exception, error)
         commit.assert_not_called()

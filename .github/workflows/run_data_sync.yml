@@ -154,7 +154,7 @@ jobs:
       - name: Run sync Strava script
         if: env.RUN_TYPE == 'strava'
         env:
-          FORCE_STRAVA_SYNC: 'true' # One-time recovery from detailed Strava maps.
+          FORCE_STRAVA_SYNC: ${{ inputs.force_strava_sync || false }}
           STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
           STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
           STRAVA_CLIENT_REFRESH_TOKEN: ${{ secrets.STRAVA_CLIENT_REFRESH_TOKEN }}
