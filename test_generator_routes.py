@@ -16,7 +16,7 @@ from generator.db import Activity
 from gpxtrackposter.track import Track
 from polyline_processor import filter_out, start_end_hiding
 from strava_sync import run_strava_sync
-from stravalib.exc import RateLimitExceeded
+from stravalib.exc import ObjectNotFound, RateLimitExceeded
 from stravalib.model import Activity as StravaActivity
 
 LIUZHOU_POINTS = [
@@ -34,6 +34,12 @@ NANNING_POINTS = [
     (22.83120, 108.25400),
     (22.83080, 108.25610),
     (22.83044, 108.25821),
+]
+COLLAPSED_NANNING_POINTS = [
+    (22.83203, 108.24882),
+    (22.83204, 108.24884),
+    (22.83205, 108.24887),
+    (22.83206, 108.24893),
 ]
 LIUZHOU_LOCATION = "柳州职业技术大学, 柳州市, 广西壮族自治区, 中国"
 NANNING_LOCATION = "清川, 南宁市, 广西壮族自治区, 中国"
@@ -390,6 +396,144 @@ class GeneratorRouteTests(unittest.TestCase):
         self.session.expire_all()
         self.assertEqual(activity.to_dict(), original)
         self.assertEqual(self.session.query(Activity).count(), 1)
+
+    def add_collapsed_historical_activity(self):
+        historical = self.add_activity(
+            18384622772,
+            "2026-05-05 19:59:12",
+            COLLAPSED_NANNING_POINTS,
+            NANNING_LOCATION,
+        )
+        historical.distance = 1650.8
+        historical.moving_time = datetime.timedelta(minutes=21, seconds=41)
+        historical.elapsed_time = datetime.timedelta(minutes=22)
+        self.session.commit()
+        self.add_activity(
+            20233117633, "2026-09-19 07:22:45", NANNING_POINTS, NANNING_LOCATION
+        )
+        return historical
+
+    def test_incremental_sync_recovers_historical_summary_hidden_by_privacy(self):
+        historical = self.add_collapsed_historical_activity()
+        original = historical.to_dict()
+        original_elapsed_time = historical.elapsed_time
+        recorded_route = polyline.encode(NANNING_POINTS)
+        with (
+            patch.object(self.generator, "check_access"),
+            patch.object(
+                self.generator.client, "get_activities", return_value=[]
+            ) as get_summaries,
+            patch.object(
+                self.generator.client,
+                "get_activity",
+                return_value=strava_activity(
+                    historical.run_id,
+                    summary=original["summary_polyline"],
+                    detailed_route=recorded_route,
+                ),
+            ) as get_detail,
+            patch.object(self.generator.client, "get_activity_streams") as get_streams,
+            patch.multiple(
+                "polyline_processor",
+                IGNORE_START_END_RANGE=0.01,
+                IGNORE_RANGE=0,
+                IGNORE_POLYLINE=[],
+            ),
+        ):
+            self.assertFalse(filter_out(original["summary_polyline"]))
+            self.generator.sync(force=False)
+            self.session.expire_all()
+            exported = self.generator.load()
+
+        self.assertGreater(
+            get_summaries.call_args.kwargs["after"],
+            datetime.datetime(2026, 5, 5, tzinfo=datetime.UTC),
+        )
+        get_detail.assert_called_once_with(historical.run_id)
+        get_streams.assert_not_called()
+        self.assertEqual(self.session.query(Activity).count(), 2)
+        self.assertEqual(historical.summary_polyline, recorded_route)
+        self.assertEqual(historical.elapsed_time, original_elapsed_time)
+        self.assertEqual(
+            {
+                key: value
+                for key, value in historical.to_dict().items()
+                if key != "summary_polyline"
+            },
+            {
+                key: value
+                for key, value in original.items()
+                if key != "summary_polyline"
+            },
+        )
+        public_route = polyline.decode(exported[0]["summary_polyline"])
+        self.assertGreaterEqual(len(public_route), 2)
+        self.assertTrue(
+            all(22.6 < lat < 23 and 108 < lon < 108.6 for lat, lon in public_route)
+        )
+        self.assertEqual(exported[0]["run_id"], historical.run_id)
+
+    def test_historical_detail_that_is_truly_short_remains_hidden_without_fabrication(
+        self,
+    ):
+        historical = self.add_collapsed_historical_activity()
+        original = historical.to_dict()
+        with (
+            patch.object(self.generator, "check_access"),
+            patch.object(self.generator.client, "get_activities", return_value=[]),
+            patch.object(
+                self.generator.client,
+                "get_activity",
+                return_value=strava_activity(
+                    historical.run_id,
+                    summary=original["summary_polyline"],
+                    detailed_route=original["summary_polyline"],
+                ),
+            ) as get_detail,
+            patch.multiple(
+                "polyline_processor",
+                IGNORE_START_END_RANGE=0.01,
+                IGNORE_RANGE=0,
+                IGNORE_POLYLINE=[],
+            ),
+        ):
+            self.generator.sync(force=False)
+            self.session.expire_all()
+            exported = self.generator.load()
+
+        get_detail.assert_called_once_with(historical.run_id)
+        self.assertEqual(historical.to_dict(), original)
+        self.assertFalse(exported[0]["summary_polyline"])
+        self.assertEqual(exported[0]["run_id"], historical.run_id)
+        self.assertTrue(exported[1]["summary_polyline"])
+        self.assertEqual(self.session.query(Activity).count(), 2)
+
+    def test_historical_detail_not_found_keeps_the_original_source_record(self):
+        historical = self.add_collapsed_historical_activity()
+        original = historical.to_dict()
+        with (
+            patch.object(self.generator, "check_access"),
+            patch.object(self.generator.client, "get_activities", return_value=[]),
+            patch.object(
+                self.generator.client,
+                "get_activity",
+                side_effect=ObjectNotFound("Historical activity unavailable"),
+            ) as get_detail,
+            patch.multiple(
+                "polyline_processor",
+                IGNORE_START_END_RANGE=0.01,
+                IGNORE_RANGE=0,
+                IGNORE_POLYLINE=[],
+            ),
+        ):
+            self.generator.sync(force=False)
+            self.session.expire_all()
+            exported = self.generator.load()
+
+        get_detail.assert_called_once_with(historical.run_id)
+        self.assertEqual(historical.to_dict(), original)
+        self.assertFalse(exported[0]["summary_polyline"])
+        self.assertEqual(self.session.query(Activity).count(), 2)
 
 
 class StravaSyncTests(unittest.TestCase):

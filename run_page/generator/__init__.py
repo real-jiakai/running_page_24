@@ -6,6 +6,7 @@ import arrow
 import stravalib
 from gpxtrackposter import track_loader
 from sqlalchemy import func
+from stravalib.exc import ObjectNotFound
 
 from polyline_processor import filter_out
 from strava_rate_limit import wait_for_strava_quota
@@ -90,11 +91,37 @@ class Generator:
             else:
                 sys.stdout.write(".")
             sys.stdout.flush()
+        self.recover_hidden_routes()
         self.session.commit()
         print(
             f"\nSynced {synced_count} Strava activities "
             f"({gps_count} with source GPS routes)."
         )
+
+    def recover_hidden_routes(self):
+        """Refresh old summaries that privacy clipping would completely hide.
+
+        Even a summary with several points can collapse a long run to a few
+        meters. Check its detailed map before concluding no route can be shown.
+        This also repairs older records outside the incremental sync window.
+        """
+        if IGNORE_BEFORE_SAVING:
+            return
+        recovered = 0
+        for activity in self.session.query(Activity):
+            source = activity.summary_polyline
+            if not source or filter_out(source):
+                continue
+            try:
+                detail = self.client.get_activity(activity.run_id)
+            except ObjectNotFound:
+                continue
+            route = resolve_activity_route(self.client, detail)
+            if route and route != source:
+                activity.summary_polyline = route
+                recovered += 1
+        if recovered:
+            print(f"\nRefreshed {recovered} routes hidden by simplified summaries.")
 
     def sync_from_data_dir(self, data_dir, file_suffix="gpx", activity_title_dict={}):
         loader = track_loader.TrackLoader()

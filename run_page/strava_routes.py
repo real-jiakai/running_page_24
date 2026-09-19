@@ -29,7 +29,11 @@ def resolve_activity_route(client, activity):
     and service failures deliberately propagate so a failed request cannot
     silently erase routes during an upsert.
     """
-    summary = getattr(getattr(activity, "map", None), "summary_polyline", None)
+    activity_map = getattr(activity, "map", None)
+    detailed = getattr(activity_map, "polyline", None)
+    if len(route_points(detailed)) >= 2:
+        return detailed
+    summary = getattr(activity_map, "summary_polyline", None)
     points = route_points(summary)
     if len(points) >= 3:
         return summary
